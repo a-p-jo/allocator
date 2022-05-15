@@ -31,14 +31,22 @@ static inline void StaticAllocator_init(void)
 
 #include <string.h> /* strlen, strcpy */
 #include <stdio.h>  /* puts, fputs, stderr */
+#include <assert.h>
 
 int main(int argc, char **argv)
 {
 	StaticAllocator_init();
-	char *progname = StaticAllocator_alloc(strlen(argv[0]));
-	if (progname)
-		strcpy(progname, argv[0]), puts(progname), StaticAllocator_free(progname);
-	else
-		fputs("Couldn't allocate.\n", stderr);
+	
+	char **args = StaticAllocator_alloc(argc*sizeof(char *));
+	assert(args);
+	for (int i = 0; i < argc; i++) {
+		args[i] = StaticAllocator_alloc(strlen(argv[i]));
+		assert(args[i]);
+		strcpy(args[i], argv[i]);
+	}
+
+	while (argc --> 0)
+		puts(args[argc]), StaticAllocator_free(args[argc]);
+	StaticAllocator_free(args);
 	return 0;
 }
