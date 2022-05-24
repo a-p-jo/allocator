@@ -34,6 +34,8 @@ void allocator_free(allocator *, void *restrict);
 void *allocator_realloc(allocator *, void *restrict, size_t);
 
 /* Obtain actual size, in bytes, of allocation refrenced by p */
-size_t allocator_size(const void *restrict p);
+size_t allocator_allocsz(const void *restrict p);
+/* Calls function with blocksize (in bytes) for each block in freelist */
+void allocator_for_blocks(allocator *, void(*)(size_t));
 
 #endif

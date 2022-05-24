@@ -98,7 +98,7 @@ void *allocator_alloc(allocator *a, size_t nbytes)
 void allocator_free(allocator *a, void *restrict ptr)
 {
 	FreeNode *p = ptr;
-	if (p--) { /* No-op is p is NULL */
+	if (p--) { /* No-op if p is NULL */
 		spinlock(&a->lock);
 		if (a->p) {
 			/* Freelist is in ascending order of addresses,
@@ -143,9 +143,23 @@ void allocator_add(allocator *a, void *restrict p, size_t nbytes)
 	}
 }
 
-size_t allocator_size(const void *restrict p)
+size_t allocator_allocsz(const void *restrict p)
 {
 	return p? ( ((FreeNode *)p-1)->nunits-1 ) * UNITSZ : 0;	
+}
+
+void allocator_for_blocks(allocator *a, void(*f)(size_t))
+{
+	if (a->p) {
+		spinlock(&a->lock);
+		FreeNode *cur = a->p;
+		do {
+			f(allocator_allocsz(cur+1));
+			cur = cur->nxt;
+
+		} while (cur != a->p);
+		spinunlock(&a->lock);
+	}
 }
 
 void *allocator_realloc(allocator *a, void *restrict p, size_t nbytes)
@@ -157,8 +171,11 @@ void *allocator_realloc(allocator *a, void *restrict p, size_t nbytes)
 		return NULL;
 	} else {
 		void *res = p;
-		if (allocator_size(p) < nbytes && (res = allocator_alloc(a, nbytes)))
-			memcpy(res, p, allocator_size(p)), allocator_free(a, p);
+		if (
+			allocator_allocsz(p) < nbytes 
+			&& (res = allocator_alloc(a, nbytes))
+		)
+			memcpy(res, p, allocator_allocsz(p)), allocator_free(a, p);
 		return res;
 	}
 }
