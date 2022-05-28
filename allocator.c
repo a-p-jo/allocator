@@ -23,7 +23,7 @@ static inline uint_fast8_t aln_offset(uintptr_t base, uint_fast8_t aln)
 {
 	return base%aln? aln - base%aln : 0;
 }
-
+ 
 #if ATOMIC_BOOL_LOCK_FREE == 2
 /* Test and test-and-set */
 static inline void spinlock(atomic_bool *lock)
@@ -61,19 +61,22 @@ static inline void spinunlock(atomic_flag *lock)
 /* K&R style next fit allocator */
 void *allocator_alloc(allocator *a, size_t nbytes)
 {
-	void *res = NULL;
-	uint_fast8_t inc = aln_offset(nbytes, UNITSZ);
-
-	/* If allocator's pointer to freelist is NULL (no freelist)
-	 * or 0 size allocation is requested
+	/* If 0 size allocation is requested
 	 * or rounding up the requested size would overflow,
+	 * or allocator's freelist pointer is NULL (no freelist)
 	 * return NULL.
 	 */
-	if (a->p && nbytes && SIZE_MAX-inc >= nbytes) {
+
+	uint_fast8_t inc = aln_offset(nbytes, UNITSZ);
+	if (!nbytes || SIZE_MAX-inc < nbytes)
+		return NULL;
+	
+	void *res = NULL;
+	spinlock(&a->lock);
+	if (a->p) {
 		/* Round up nbytes to next number of units, +1 unit for header */
 		size_t nunits = (nbytes+inc)/UNITSZ + 1;
 
-		spinlock(&a->lock);
 		for (FreeNode *prv = a->p, *cur = prv->nxt ;; prv = cur, cur = cur->nxt) {
 			if (cur->nunits >= nunits) {         /* match found ! */
 				if (cur->nunits == nunits) { /* unlink block  */
@@ -89,8 +92,8 @@ void *allocator_alloc(allocator *a, size_t nbytes)
 			} else if (cur == a->p) /* wrapped around, no matches */
 				break;
 		}
-		spinunlock(&a->lock);
 	}
+	spinunlock(&a->lock);
 	return res;
 }
 
@@ -150,16 +153,16 @@ size_t allocator_allocsz(const void *restrict p)
 
 void allocator_for_blocks(allocator *a, void(*f)(size_t))
 {
+	spinlock(&a->lock);
 	if (a->p) {
-		spinlock(&a->lock);
 		FreeNode *cur = a->p;
 		do {
 			f(allocator_allocsz(cur+1));
 			cur = cur->nxt;
 
 		} while (cur != a->p);
-		spinunlock(&a->lock);
 	}
+	spinunlock(&a->lock);
 }
 
 void *allocator_realloc(allocator *a, void *restrict p, size_t nbytes)
