@@ -1,8 +1,8 @@
 #include "allocator.h"
 #include <stdbool.h>   /* bool, true, false       */
 #include <stdint.h>    /* uintptr_t, uint_fast8_t */
-#include <stdalign.h>  /* max_align_t, alignof    */
-#include <string.h>    /* memcpy() */
+#include <stdalign.h>  /* alignof                 */
+#include <string.h>    /* memcpy()                */
 
 /* A FreeNode header prefixes blocks in the freelist,
  * putting them in a circular singly-linked list and
@@ -13,7 +13,7 @@ typedef struct FreeNode {
 	size_t nunits;
 	struct FreeNode *nxt;
 	/* aligning header to strictest type also aligns blocks */ 
-	max_align_t _align[];
+	allocator_align_t _align[];
 } FreeNode;
 
 enum {UNITSZ = sizeof(FreeNode)};
@@ -61,35 +61,36 @@ static inline void spinunlock(atomic_flag *lock)
 /* K&R style next fit allocator */
 void *allocator_alloc(allocator *a, size_t nbytes)
 {
-	/* If 0 size allocation is requested
+	/* If a is NULL
+	 * or 0 size allocation is requested
 	 * or rounding up the requested size would overflow,
 	 * or allocator's freelist pointer is NULL (no freelist)
 	 * return NULL.
 	 */
 
 	uint_fast8_t inc = aln_offset(nbytes, UNITSZ);
-	if (!nbytes || SIZE_MAX-inc < nbytes)
+	if (!a || !nbytes || SIZE_MAX-inc < nbytes)
 		return NULL;
 	
 	void *res = NULL;
 	spinlock(&a->lock);
 	if (a->p) {
-		/* Round up nbytes to next number of units, +1 unit for header */
+		/* Round up nbytes to number of units, +1 unit for header    */
 		size_t nunits = (nbytes+inc)/UNITSZ + 1;
 
 		for (FreeNode *prv = a->p, *cur = prv->nxt ;; prv = cur, cur = cur->nxt) {
-			if (cur->nunits >= nunits) {         /* match found ! */
-				if (cur->nunits == nunits) { /* unlink block  */
+			if (cur->nunits >= nunits) {         /* match found  */
+				if (cur->nunits == nunits) { /* unlink block */
 					if (prv->nxt != cur->nxt)
 						prv->nxt = cur->nxt;
-					else /* freelist is singleton */
-						prv = NULL; /* NULL signifies no freelist */
-				} else /* adjust size & allocate from tail */
+					else /* freelist is singleton       */
+						prv = NULL; /* No freelist! */
+				} else /* adjust size & allocate from tail  */
 					(cur += (cur->nunits -= nunits))->nunits = nunits;
 				a->p = prv;   /* Aids freelist consistency  */
 				res  = cur+1; /* Usable region after header */
 				break;
-			} else if (cur == a->p) /* wrapped around, no matches */
+			} else if (cur == a->p) /* wrapped around, no match */
 				break;
 		}
 	}
@@ -97,11 +98,11 @@ void *allocator_alloc(allocator *a, size_t nbytes)
 	return res;
 }
 
-/* Add ptr to a's freelist */
+/* Return ptr to a's freelist */
 void allocator_free(allocator *a, void *restrict ptr)
 {
 	FreeNode *p = ptr;
-	if (p--) { /* No-op if p is NULL */
+	if (a && p--) { /* No-op if either a or p is NULL                   */
 		spinlock(&a->lock);
 		if (a->p) {
 			/* Freelist is in ascending order of addresses,
@@ -113,18 +114,18 @@ void allocator_free(allocator *a, void *restrict ptr)
 					break;
 			}
 
-			if (p + p->nunits == cur->nxt) { /* Coalesce  with nxt */
+			if (p + p->nunits == cur->nxt) { /* Coalesce to nxt  */
 				p->nunits += cur->nxt->nunits;
 				p->nxt = cur->nxt->nxt;
 			} else /* Insert p after cur */
 				p->nxt = cur->nxt;
-			if (cur + cur->nunits == p) {   /* Coalesce with prv   */
+			if (cur + cur->nunits == p) {   /* Coalesce to prv  */
 				cur->nunits += p->nunits;
 				cur->nxt = p->nxt;
-			} else /* Insert p after cur */
+			} else                          /* Insert after cur */
 				cur->nxt = p;
 			a->p = cur;
-		} else /* If no freelist, create singleton with p */
+		} else /* If no freelist, create singleton with p           */
 			a->p = p, p->nxt = p;
 		spinunlock(&a->lock);
 	}
@@ -133,52 +134,69 @@ void allocator_free(allocator *a, void *restrict ptr)
 void allocator_add(allocator *a, void *restrict p, size_t nbytes)
 {
 	uintptr_t addr = (uintptr_t)p;
-	uint_fast8_t inc = aln_offset(addr, alignof(max_align_t));
+	uint_fast8_t inc = aln_offset(addr, alignof(allocator_align_t));
 	size_t nunits = (nbytes - inc)/UNITSZ; /* Round down */
 
-	/* Ensure aligned pointer doesn't exceed bounds,
+	/* Ensure a is not NULL, aligned pointer doesn't exceed bounds,
 	 * and given size is of at least one unit.
 	 */
-	if (nbytes > inc+UNITSZ && nunits) {
+	if (a && nbytes > inc+UNITSZ && nunits) {
 		FreeNode *new = (FreeNode *)(addr+inc); /* Create header */
 		new->nunits = nunits;
 		allocator_free(a, new+1);
 	}
 }
 
-size_t allocator_allocsz(const void *restrict p)
+static inline size_t node_usable_space(const FreeNode *n)
 {
-	return p? ( ((FreeNode *)p-1)->nunits-1 ) * UNITSZ : 0;	
+	return (n->nunits-1) * UNITSZ;
 }
 
-void allocator_for_blocks(allocator *a, void(*f)(size_t))
+size_t allocator_allocsz(allocator *a, const void *restrict p)
 {
-	spinlock(&a->lock);
-	if (a->p) {
-		FreeNode *cur = a->p;
-		do {
-			f(allocator_allocsz(cur+1));
-			cur = cur->nxt;
-
-		} while (cur != a->p);
+	size_t retval = 0;
+	if (a && p) {
+		spinlock(&a->lock);
+		retval = node_usable_space((FreeNode *)p-1);
+		spinunlock(&a->lock);
 	}
-	spinunlock(&a->lock);
+	return retval;
 }
 
-void *allocator_realloc(allocator *a, void *restrict p, size_t nbytes)
+void allocator_for_blocks(allocator *a, void(*f)(uintptr_t, size_t))
 {
-	if (!p)
+	if (a && f) {
+		spinlock(&a->lock);
+		if (a->p) {
+			FreeNode *cur = a->p;
+			do {
+				f((uintptr_t)(cur+1), node_usable_space(cur));
+				cur = cur->nxt;
+			} while (cur != a->p);
+		}
+		spinunlock(&a->lock);
+	}
+}
+
+void *allocator_realloc(allocator *a, void *restrict p, size_t nbytes) 
+{
+	if (!a)
+		return NULL;
+	else if (!p)
 		return allocator_alloc(a, nbytes);
 	else if (!nbytes) {
 		allocator_free(a, p);
 		return NULL;
 	} else {
 		void *res = p;
+		size_t p_usable_space = allocator_allocsz(a, p);
 		if (
-			allocator_allocsz(p) < nbytes 
+			p_usable_space < nbytes 
 			&& (res = allocator_alloc(a, nbytes))
-		)
-			memcpy(res, p, allocator_allocsz(p)), allocator_free(a, p);
+		) {
+			memcpy(res, p, p_usable_space);
+			allocator_free(a, p);
+		}
 		return res;
 	}
 }
