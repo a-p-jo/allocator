@@ -140,7 +140,7 @@ void allocator_add(allocator *a, void *restrict p, size_t nbytes)
 	/* Ensure a is not NULL, aligned pointer doesn't exceed bounds,
 	 * and given size is of at least one unit.
 	 */
-	if (a && nbytes > inc+UNITSZ && nunits) {
+	if (nbytes > inc+UNITSZ && nunits) {
 		FreeNode *new = (FreeNode *)(addr+inc); /* Create header */
 		new->nunits = nunits;
 		allocator_free(a, new+1);
@@ -180,9 +180,7 @@ void allocator_for_blocks(allocator *a, void(*f)(uintptr_t, size_t))
 
 void *allocator_realloc(allocator *a, void *restrict p, size_t nbytes) 
 {
-	if (!a)
-		return NULL;
-	else if (!p)
+	if (!p)
 		return allocator_alloc(a, nbytes);
 	else if (!nbytes) {
 		allocator_free(a, p);

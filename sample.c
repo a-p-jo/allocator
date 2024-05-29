@@ -21,10 +21,9 @@ static void show_freelist(allocator *a, const char *restrict msg)
 {
 	puts(msg);
 	allocator_for_blocks(a, pblksz);
-	pblksz_cnt = 0;
+	pblksz_cnt = 0;           /* reset count            */
 	putchar('\n'); /* like a paragraph break */
 }
-
 
 /* 4KiB heap composed of 4 equally-sized blocks */
 #define HEAP_SIZE 4096
@@ -71,7 +70,7 @@ int main(int argc, char **argv)
 	/* First thing we allocated was argv_copy itself! */
 	printf(
 		"Block #0: @0x%"PRIXPTR", %zu bytes used of %zu\n",
-		(uintmax_t)argv_copy, sizeof(*argv_copy)*argc,
+		(uintmax_t)argv_copy, sizeof(argv_copy[0])*argc,
 		allocator_allocsz(&a, argv_copy)
 	);
 	/* Then we allocated & copied each arg inside it */
